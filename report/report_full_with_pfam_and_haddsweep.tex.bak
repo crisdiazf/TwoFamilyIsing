@@ -1,0 +1,965 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=2.7cm]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usetikzlibrary{positioning,fit,backgrounds,arrows.meta}
+
+\newcommand{\vA}{v_{A}}
+\newcommand{\vB}{v_{B}}
+
+\title{Learning inter-family correlations with a shared hidden layer:\\
+a two-family Ising model as a controlled test case}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We consider a toy statistical-mechanics system made of two weakly coupled
+Ising subsystems (``families''), each with its own sparse random
+intra-family couplings and a much sparser set of inter-family couplings.
+We ask whether a Restricted Boltzmann Machine (RBM), trained only on
+family-resolved data, can be extended with a small number of additional
+hidden units to recover the inter-family coupling structure without
+disturbing what has already been learned about each family in isolation.
+The extension is built by freezing the parameters of two independently
+trained RBMs inside a larger, paired RBM and leaving only a small block of
+newly added hidden units, connected to the full joint visible layer, free
+to adapt. We find that, for a sufficiently dense inter-family coupling
+matrix, these added units do recover genuine cross-family structure: the
+correlation matrix sampled from the trained paired model at equilibrium
+correlates with the true (hidden) coupling matrix at $r\simeq0.80$,
+essentially saturating the finite-sample ceiling set by the data
+themselves ($r\simeq0.84$), and far above the $r\simeq0$ obtained from two
+independent, uncoupled RBMs. The result is essentially unchanged whether
+the visible layer is represented with binary or categorical (Potts) units,
+with the categorical representation performing modestly better throughout.
+\end{abstract}
+
+\section{Motivation}
+
+Many complex systems of interest in statistical physics are not single
+homogeneous systems but collections of subsystems that interact weakly
+with one another: coupled spin lattices, interacting populations of
+neurons, or correlated sets of biological sequences organised into
+families. A recurring question in this setting is inferential rather than
+dynamical: given only samples of the joint configuration, can one
+identify, or at least confirm the existence of, a genuine cross-subsystem
+coupling, as opposed to a spurious correlation induced by having estimated
+the single-subsystem statistics imperfectly?
+
+We study this question on a toy model where the answer is known by
+construction: two Ising subsystems, $A$ and $B$, each with an
+independently generated sparse random coupling matrix, joined by a sparse
+matrix of inter-family couplings. We generate equilibrium samples from
+this joint model and ask a generative, energy-based learning model --- a
+Restricted Boltzmann Machine (RBM) --- to recover the joint distribution.
+Rather than training a single RBM from scratch on the joint data, we
+deliberately split the problem: we first let two independent RBMs learn
+each family on its own, and then ask a small set of \emph{additional}
+hidden units, added on top of the two frozen models, to account for
+whatever the two independent models fail to explain -- namely, the
+inter-family correlations. This construction lets us isolate, quite
+literally, the channel through which the model is allowed to represent
+cross-family information, and to check directly, by comparison with the
+known ground truth, whether that channel is doing its job.
+
+\section{The two-family Ising model}
+\label{sec:model}
+
+\subsection{Hamiltonian}
+
+Each family $X\in\{A,B\}$ consists of $N=30$ Ising spins
+$s^X_i=\pm1$, $i=1,\dots,N$. The joint system of $2N=60$ spins is governed
+by the Hamiltonian
+\begin{equation}
+\mathcal{H}(\bm{s}_A,\bm{s}_B) = -\sum_{i<j} J^A_{ij}\,s^A_i s^A_j
+-\sum_{i<j} J^B_{ij}\,s^B_i s^B_j
+-\sum_{i,j} K_{ij}\,s^A_i s^B_j
+-\sum_i h^A_i s^A_i -\sum_i h^B_i s^B_i \, ,
+\label{eq:hamiltonian}
+\end{equation}
+sampled at inverse temperature $\beta = 0.5$. The intra-family couplings
+$J^A$ and $J^B$ are built independently on sparse random graphs with edge
+density $0.12$ (roughly $52$ non-zero bonds out of $\binom{30}{2}=435$
+possible pairs in each family), with bond strengths drawn uniformly from
+$J\in[-0.8,0.8]$ and small random local fields $h\in[-0.05,0.05]$. This is
+an ordinary dilute Sherrington--Kirkpatrick-type random-bond Ising model
+for each family separately, chosen only for concreteness -- the qualitative
+picture we report does not depend on this specific choice of intra-family
+disorder.
+
+The inter-family coupling matrix $K\in\mathbb{R}^{30\times30}$ is the
+object of interest. It is built as a \emph{sparse} matrix: a fixed number
+$n_{\mathrm{links}}$ of $(i,j)$ pairs are chosen at random and assigned a
+coupling strength drawn uniformly from $K_{ij}\in[-0.9,0.9]$; all other
+entries of $K$ are exactly zero. We generated data sets at two link
+densities, $n_{\mathrm{links}}=20$ ($2.2\%$ of the $900$ possible cross
+pairs) and $n_{\mathrm{links}}=100$ ($11.1\%$). The sparser data set turns
+out to sit uncomfortably close to a statistical noise floor discussed in
+Section~\ref{sec:sparsity}, so throughout the rest of this report we use
+the denser, $n_{\mathrm{links}}=100$, data set; the qualitative conclusions
+carry over to the sparser case, only with a weaker signal-to-noise ratio.
+
+\subsection{Equilibrium sampling}
+
+Samples are drawn from the Boltzmann distribution
+$p(\bm{s}_A,\bm{s}_B)\propto e^{-\beta\mathcal{H}}$ associated with
+Eq.~\eqref{eq:hamiltonian} using single-spin-flip Metropolis--Hastings
+dynamics, with $5000$ sweeps of burn-in and a further thinning of $100$
+sweeps between recorded configurations, for a total of $20\,000$
+independent joint configurations $(\bm{s}_A,\bm{s}_B)$. These are split
+$70/15/15$ into training, validation and test sets. No information about
+$J^A$, $J^B$ or $K$ is passed to the learning stage: the models below see
+only the sampled spin configurations.
+
+\section{Restricted Boltzmann Machines as the modelling tool}
+
+An RBM is a pairwise energy-based model on a bipartite graph of visible
+units $\bm{v}$ (here, the physical spins) and hidden (auxiliary) units
+$\bm{h}$, with joint Boltzmann weight
+\begin{equation}
+p(\bm{v},\bm{h}) \propto \exp\!\big[-E(\bm{v},\bm{h})\big], \qquad
+E(\bm{v},\bm{h}) = -\bm{v}^\top W \bm{h} - a(\bm{v}) - b(\bm{h}) \, ,
+\end{equation}
+where $W$ is a visible--hidden weight matrix and $a$, $b$ are
+layer-specific potentials. The absence of visible-visible and
+hidden-hidden couplings is precisely what makes both conditionals,
+$p(\bm{h}\mid\bm{v})$ and $p(\bm{v}\mid\bm{h})$, factorised and hence
+efficient to sample: the hidden layer plays the role of an auxiliary field
+that mediates effective, non-pairwise interactions among the visible
+spins once it is marginalised out, in the same spirit as a
+Hubbard--Stratonovich decoupling of a many-body interaction. This is what
+makes an RBM more expressive than an independent-spin (mean-field) model
+while remaining tractable.
+
+We use two variants, differing only in how the visible layer encodes the
+Ising spin and in the hidden-unit statistics:
+
+\begin{itemize}
+\item \textbf{Binary RBM.} Visible and hidden units are both Bernoulli
+variables ($v_i, h_\mu \in\{0,1\}$), the standard Hopfield-adjacent RBM.
+\item \textbf{Potts RBM.} Visible units are one-hot (categorical, Potts)
+variables -- the natural generalisation of an Ising spin to $q$ states,
+here specialised to $q=2$ and sampled through a Gumbel-softmax
+relaxation for efficient simulation -- paired with hidden units of the
+\emph{dReLU} family (continuous, rectified, no-scale variant), which
+generalise the Bernoulli hidden unit to a continuous field with a
+richer response function.
+\end{itemize}
+
+Both variants are wrapped with an online re-standardisation of the visible
+and hidden layers during training (zero mean, unit variance), a standard
+trick that stabilises the gradient at no cost to the represented
+distribution, and, for the Potts layer only, a zero-sum gauge fixing of
+the categorical weights.
+
+\subsection{Training}
+
+Maximum-likelihood training of an RBM requires the gradient of the
+log-likelihood, which contains a data-averaged and a model-averaged term;
+the latter is estimated by persistent Monte Carlo chains (Persistent
+Contrastive Divergence, PCD), i.e.\ a set of chains that are not
+reinitialised at every gradient step but instead carried over and advanced
+by a fixed number of Monte Carlo sweeps ($K=50$ sweeps here) between
+successive parameter updates. This is simply stochastic gradient ascent
+on the log-likelihood with the intractable partition-function term
+estimated on the fly by simulation, using mini-batches of $512$
+configurations and the Adam adaptive step-size rule. Each individual RBM
+(one per family) is trained for $10\,000$ such gradient steps.
+
+\section{The paired construction: frozen and added units}
+\label{sec:paired}
+
+The central question is whether cross-family correlations can be
+attributed to a well-defined, minimal subset of model parameters, rather
+than requiring a full joint re-training. We construct a single, larger
+RBM -- the \emph{paired} model -- as follows (Fig.~\ref{fig:architecture}):
+
+\begin{enumerate}
+\item The visible layer of the paired model is the concatenation of the
+two families' visible layers, $60$ spins in total.
+\item The hidden layer is the concatenation of three blocks: the $30$
+hidden units of the independently trained $A$-model, the $30$ hidden
+units of the independently trained $B$-model, and $30$ newly
+\emph{added} hidden units with no prior identity.
+\item The weight blocks connecting $A$'s hidden units to $A$'s visible
+units, and $B$'s hidden units to $B$'s visible units, are initialised
+from the independently trained models and then \emph{frozen}: after
+every gradient step of the paired model's training, these blocks (and
+the corresponding visible/hidden biases) are reset to their reference
+values, discarding whatever gradient update the optimiser proposed for
+them. This is a projection-based freezing scheme, equivalent in effect to
+excluding these parameters from the gradient, but implemented as a
+reset for convenience.
+\item The weight blocks connecting $A$'s hidden units to $B$'s visible
+units, and vice versa, are pinned at exactly zero throughout training:
+the private hidden units of one family have, by construction, no direct
+view of the other family's spins.
+\item The only parameters left genuinely free to adapt under gradient
+ascent are the weights connecting the $30$ added hidden units to the
+\emph{full} $60$-spin visible layer, together with the added units' own
+biases.
+\end{enumerate}
+
+By construction, any cross-family statistical dependence that the paired
+model is capable of representing must flow through the added units: they
+are the sole channel connecting $A$ and $B$. If the added units learn
+nothing, the paired model is exactly equivalent, in its predictions, to
+two independent, non-interacting RBMs. If they learn something, this
+something can only be inter-family structure, since everything else in
+the model is already fixed to reproduce single-family statistics as well
+as the private models already do. The paired model is trained for a
+further $3000$ gradient steps, on top of the fully-trained private
+models, with the same PCD/Adam recipe.
+
+\begin{figure}[htb]
+\centering
+\begin{tikzpicture}[
+  node distance=10mm,
+  unit/.style={circle, draw, minimum size=7mm, inner sep=0pt},
+  frozen/.style={unit, fill=blue!12},
+  addedu/.style={unit, fill=orange!18},
+  visu/.style={unit, fill=gray!12},
+  frozenedge/.style={draw, thick},
+  freeedge/.style={draw, thick, dashed, -{Latex[length=2mm]}},
+  zeroedge/.style={draw, thin, dotted, gray},
+  font=\small
+]
+
+  \node[visu] (vA1) at (0,0) {};
+  \node[visu] (vA2) [right=3mm of vA1] {};
+  \node (vAdots) [right=1mm of vA2] {$\cdots$};
+  \node[visu] (vA3) [right=1mm of vAdots] {};
+  \node[visu] (vB1) at (5.2,0) {};
+  \node[visu] (vB2) [right=3mm of vB1] {};
+  \node (vBdots) [right=1mm of vB2] {$\cdots$};
+  \node[visu] (vB3) [right=1mm of vBdots] {};
+
+  \node[frozen] (hA1) at (0.7,2.4) {};
+  \node[frozen] (hA2) [right=3mm of hA1] {};
+  \node[addedu] (hadd1) at (4.6,2.4) {};
+  \node[addedu] (hadd2) [right=3mm of hadd1] {};
+  \node[addedu] (hadd3) [right=3mm of hadd2] {};
+  \node[frozen] (hB1) at (7.2,2.4) {};
+  \node[frozen] (hB2) [right=3mm of hB1] {};
+
+  \foreach \h in {hA1,hA2}
+    \foreach \v in {vA1,vA2,vA3}
+      \draw[frozenedge] (\v) -- (\h);
+  \foreach \h in {hB1,hB2}
+    \foreach \v in {vB1,vB2,vB3}
+      \draw[frozenedge] (\v) -- (\h);
+
+  \foreach \h in {hadd1,hadd2,hadd3}
+    \foreach \v in {vA1,vA2,vA3,vB1,vB2,vB3}
+      \draw[freeedge] (\v) -- (\h);
+
+  \draw[zeroedge] (hA1) .. controls (2.5,3.4) and (5.0,3.4) .. (vB1);
+  \draw[zeroedge] (hB1) .. controls (5.0,3.4) and (2.5,3.4) .. (vA1);
+
+  \node[align=center] at (0.7,-1.0) {visible layer $\vA$\\(family $A$, frozen fields)};
+  \node[align=center] at (7.2,-1.0) {visible layer $\vB$\\(family $B$, frozen fields)};
+  \node[align=center,text=blue!60!black] at (1.1,3.35) {$h_A$ (frozen)};
+  \node[align=center,text=blue!60!black] at (6.8,3.35) {$h_B$ (frozen)};
+  \node[align=center,text=orange!70!black] at (5.0,3.35) {$h_{\mathrm{add}}$ (free)};
+
+\end{tikzpicture}
+\caption{Architecture of the paired RBM. Solid edges: private
+$A$--$A$ and $B$--$B$ weight blocks, initialised from the independently
+trained RBMs and reset to those values after every gradient step
+(``frozen''). Dotted grey edges: the cross blocks $h_A$--$\vB$ and
+$h_B$--$\vA$, permanently pinned at zero. Dashed orange edges: the only
+free parameters in the paired model, connecting the $30$ added hidden
+units to the full, joint visible layer.}
+\label{fig:architecture}
+\end{figure}
+
+\section{Diagnostics}
+
+We use two complementary levels of validation.
+
+\paragraph{Training-time diagnostics.} During training of the paired
+model we periodically compare, along the same short persistent Monte
+Carlo chains used for the gradient estimate, data-averaged and
+model-averaged correlations $\langle v_i h_\mu\rangle$ and
+$\langle v_i v_j\rangle$, reporting the Pearson correlation $r$ between
+the data-side and model-side vectors. These are cheap, on-line
+diagnostics of convergence, not a substitute for a proper equilibrium
+test, since the persistent chains used during training are advanced by
+only a handful of sweeps per step and are not guaranteed to be
+equilibrated.
+
+\paragraph{Equilibrium validation.} The decisive test is performed
+\emph{after} training, on the frozen, converged model: we draw $1000$
+independent Gibbs chains, each run for $5000$ sweeps from a random
+initial condition, and use the resulting equilibrium samples to estimate
+the model's cross-family correlation matrix
+$\langle s_i^A s_j^B\rangle_{\rm model}$. This is then compared with the
+true, hidden coupling matrix $K$ via (i) the fraction of the $100$
+strongest true couplings that are also among the $100$ strongest
+correlations recovered by the model (``top-$K$ overlap''), and (ii) the
+Pearson correlation between the full recovered correlation matrix and
+$K$. Both quantities are also computed for the finite-sample data
+themselves (an upper bound set by sampling noise) and for a null model
+consisting of the two independently trained RBMs run side by side with no
+shared units at all (a lower bound corresponding to zero learned
+cross-family coupling).
+
+\subsection{An important caveat on sparsity}
+\label{sec:sparsity}
+
+Because $K$ is very sparse (at most $100$ non-zero entries out of $900$),
+the whole-matrix Pearson correlation between any noisy estimate of the
+cross-correlation matrix and $K$ is structurally bounded well below $1$,
+even for a perfect model: correlating a mostly-zero signal against a
+dense, noisy estimate dilutes the true signal with sampling noise on all
+the entries that are exactly zero by construction. We verified this
+directly: restricting the same comparison to only the $100$ truly
+non-zero entries of $K$ raises the correlation from $r=0.824$ to
+$r=0.992$ using the training data alone. The relevant benchmark is
+therefore not $r=1$ but the ceiling set by the finite-sample data
+themselves, against which the paired model should be judged.
+
+\section{Results}
+
+We report results for a single representative configuration: the denser
+inter-family coupling data set ($n_{\mathrm{links}}=100$), $30$ hidden
+units per private RBM, $30$ added units, no L1/L2 regularisation on the
+weights. The private RBMs are trained for $10\,000$ steps and the paired
+model for a further $3000$ steps, for both the Potts and the Binary
+variant of the architecture.
+
+\subsection{Individual RBM fidelity and training dynamics}
+
+Before any pairing, each private RBM is checked against held-out data.
+Pseudo-likelihood on the training and validation sets track each other
+closely for both families (Potts: $\ell=-0.598$ train vs.\ $-0.592$
+validation for family $A$; Binary: $-0.598$ vs.\ $-0.598$), indicating no
+overfitting at this training length (Fig.~\ref{fig:pll}). The
+visible--hidden correlation check ($r=0.94$ Potts, $r=0.87$ Binary) is
+systematically higher than the harder visible--visible check ($r=0.82$
+Potts, $r=0.82$ Binary), as expected: reproducing the hidden units'
+activation statistics is a softer target than reproducing the full
+pairwise correlation structure of the spins themselves.
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.62\linewidth]{figures/pseudolikelihood.png}
+\caption{Training and validation pseudo-likelihood of the private RBMs
+(family $A$, family $B$) and of the paired RBM, as a function of gradient
+step, Potts (top) and Binary (bottom) variants.}
+\label{fig:pll}
+\end{figure}
+
+Once the paired model is assembled and its added units begin training,
+the freeze check confirms that the private blocks remain exactly at their
+reference values throughout ($30/30$ frozen parameters unchanged at every
+logged step, for both variants). The added units' own visible--hidden
+correlation grows steadily over the $3000$ paired-training steps
+(Fig.~\ref{fig:abcheck}) and their weight norm increases by more than an
+order of magnitude ($\times 14.9$ for Potts, $\times 9.7$ for Binary,
+from initialisation), while the gradient on this block remains
+non-negligible at the end of training -- i.e., the added units are still
+actively adapting rather than having saturated, and no unit has collapsed
+to a dead, always-on or always-off state.
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.62\linewidth]{figures/ab_check_training.png}
+\caption{Evolution, over the $3000$ paired-training steps, of the
+Pearson correlation between data-side and model-side interfamily
+correlations $\langle v_i^A v_j^B\rangle$ (the ``$ab$-check''), for the
+Potts and Binary paired models. Both climb from a poorly correlated
+initial state ($K_{AB}=0$, independent-model regime) towards
+$r\approx0.8$.}
+\label{fig:abcheck}
+\end{figure}
+
+\subsection{Equilibrium validation against the ground truth}
+
+The training-time diagnostics above are encouraging but not conclusive,
+since they are measured on short, non-equilibrated persistent chains. We
+now turn to the decisive test: long, properly burnt-in Gibbs sampling from
+the final, frozen paired model (Section~\ref{sec:paired}), and comparison
+with the true coupling matrix $K$.
+
+As a first sanity check, Fig.~\ref{fig:freeenergy} shows the free energy
+of the sampled chains as a function of the number of Monte Carlo sweeps,
+confirming that $5000$ sweeps is comfortably sufficient for the chains to
+reach a stationary regime before the burn-in samples are discarded.
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.62\linewidth]{figures/free_energy.png}
+\caption{Free energy of the Gibbs chains as a function of the number of
+Monte Carlo sweeps, averaged over $1000$ independent chains, for the
+private and paired Potts models. A stationary plateau is reached well
+before the $5000$-sweep burn-in used throughout.}
+\label{fig:freeenergy}
+\end{figure}
+
+Fig.~\ref{fig:blockhv} decomposes the same equilibrium samples by hidden
+block, exactly mirroring the architecture of Fig.~\ref{fig:architecture}:
+the frozen $A$--$A$ and $B$--$B$ blocks reproduce the data almost exactly
+($\rho=0.95$ and $\rho=0.97$), confirming that pairing does not disturb
+what the private models had already learned, while the added units'
+correlation with the \emph{full} joint visible layer, $\langle
+h_{\mathrm{add}}\, v_{\mathrm{full}}\rangle$, tracks the data-side
+estimate at $\rho=0.997$: the added units are not merely active, they are
+active in a way that is faithful to the data.
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.78\linewidth]{figures/block_hv.png}
+\caption{Data- vs.\ model-side visible--hidden correlations
+$\langle v h\rangle$, from equilibrium Gibbs samples of the Potts paired
+model, split by hidden block: private $A$--$A$ and $B$--$B$ blocks
+(``should reproduce the data essentially exactly'', since they are
+frozen), and the added units against the full joint visible layer
+(the only block that can encode genuinely new, cross-family information).}
+\label{fig:blockhv}
+\end{figure}
+
+The central result of this study is the direct comparison, at equilibrium,
+between the model's recovered cross-family correlation matrix and the
+true coupling matrix $K$ (Fig.~\ref{fig:crosscorr}), summarised
+quantitatively in Table~\ref{tab:headline}. The paired model recovers
+$67\%$ (Potts) and $65\%$ (Binary) of the $100$ strongest true couplings
+among its own $100$ strongest recovered correlations, compared to a
+$74\%$ recovery rate for the training data themselves (the practical
+ceiling given the finite sample size) and essentially chance-level
+recovery ($6$--$8\%$) for two independent, uncoupled RBMs. The
+whole-matrix correlation against $K$ reaches $r=0.796$ (Potts) and
+$r=0.786$ (Binary), against a data ceiling of $r=0.844$ and an
+independent-model baseline consistent with zero ($r=0.012$ Potts,
+$r=-0.039$ Binary). In other words, the $30$ added units, despite having
+no privileged information about which cross-family pairs are actually
+coupled, recover the large majority of the true coupling structure,
+closing most of the gap between ``no shared units at all'' and ``as good
+as the data allow''.
+
+\begin{table}[htb]
+\centering
+\caption{Equilibrium validation against the true coupling matrix $K$
+(Gibbs samples, $1000$ chains, $5000$ sweeps burn-in). ``Data'' is the
+finite-sample ceiling; ``independent'' is the null model of two
+uncoupled, independently trained RBMs.}
+\label{tab:headline}
+\begin{tabular}{lccc}
+\toprule
+ & paired model & data (ceiling) & independent (null) \\
+\midrule
+\multicolumn{4}{l}{\textit{Potts + dReLU}} \\
+\quad top-100 overlap & 0.67 & 0.74 & 0.06 \\
+\quad corr.\ with $K$ & 0.796 & 0.844 & 0.012 \\
+\addlinespace
+\multicolumn{4}{l}{\textit{Binary}} \\
+\quad top-100 overlap & 0.65 & 0.74 & 0.08 \\
+\quad corr.\ with $K$ & 0.786 & 0.844 & $-0.039$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htb]
+\centering
+\begin{subfigure}[t]{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{figures/cross_corr_potts.png}
+\caption{Potts + dReLU paired model}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{figures/cross_corr_binary.png}
+\caption{Binary paired model}
+\end{subfigure}
+\caption{Cross-family correlation matrices at equilibrium: true coupling
+$K$, empirical training-data correlation, correlation recovered by the
+paired model, and correlation obtained from two independent, uncoupled
+RBMs. The paired model visibly reproduces the sparse support of $K$ that
+is absent from the independent-model baseline.}
+\label{fig:crosscorr}
+\end{figure}
+
+Finally, we checked that this recovery of cross-family structure does not
+come at the cost of corrupting each family's own private statistics
+(Fig.~\ref{fig:familypreservation}): the residual off-diagonal
+correlation within each family, when sampled from the full paired model,
+stays close to its data value (family $A$: $0.057\to0.068$ for Potts,
+$0.057\to0.068$ for Binary; family $B$: $0.048\to0.058$ Potts,
+$0.048\to0.060$ Binary), a small degradation consistent with the added
+units introducing weak, indirect, effective intra-family couplings
+through the shared hidden layer, rather than with any breakdown of the
+frozen private blocks.
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.62\linewidth]{figures/family_preservation.png}
+\caption{Intra-family correlation matrices, data vs.\ paired-model
+equilibrium samples, family $A$ and family $B$ separately. The frozen
+blocks preserve the private structure learned before pairing, up to a
+small perturbation induced by the shared added units.}
+\label{fig:familypreservation}
+\end{figure}
+
+\subsection{Potts versus Binary}
+
+Across every diagnostic, the Potts + dReLU variant performs modestly but
+consistently better than the plain Binary RBM: the private RBMs reach a
+higher visible--hidden correlation ($r=0.94$ vs.\ $0.87$), the added
+units track the data far more closely at equilibrium ($\rho=0.997$ vs.\
+$\rho=0.81$ for $\langle h_{\mathrm{add}} v_{\mathrm{full}}\rangle$), yet
+this advantage barely shows up in the final, decisive test against
+ground truth (top-$K$ overlap $0.67$ vs.\ $0.65$, correlation with $K$
+$0.796$ vs.\ $0.786$). This suggests that the categorical (Potts)
+representation, being a more natural encoding of a two-state spin than a
+$\{0,1\}$ Bernoulli unit combined with a continuous dReLU hidden
+response, yields cleaner, more faithful internal statistics -- but that
+both representations are, in this regime, expressive enough to extract
+essentially the same amount of genuine cross-family signal once
+equilibrated.
+
+\section{Discussion and outlook}
+
+The main qualitative finding is that a small, dedicated block of hidden
+units, added on top of two frozen, independently trained models, is
+sufficient to recover the large majority of an otherwise hidden
+inter-family coupling structure, and that this recovery can be confirmed
+directly against the known ground truth through equilibrium Monte Carlo
+sampling rather than inferred indirectly from training curves alone. Two
+points of caution are worth stating explicitly. First, the density of the
+inter-family coupling matters: at $n_{\mathrm{links}}=20$ (roughly a
+fifth of the density used above) the same construction still recovers
+correlation with $K$ well above the independent-model baseline, but the
+absolute values of the top-$K$ overlap and of $r$ against $K$ are
+noticeably weaker, indicating that very sparse, weak cross-couplings are
+harder to disentangle from sampling noise with a fixed amount of
+training. Second, the natural whole-matrix Pearson correlation against a
+sparse ground truth carries a structural ceiling well below $1$
+(Sec.~\ref{sec:sparsity}); reporting the recovered value against the
+finite-sample data's own ceiling, as we did throughout, is essential to
+avoid over- or under-stating how well the model has actually done.
+
+We regard this as a controlled, minimal test bed rather than a finished
+inference method: a single realisation of the random couplings and a
+single training run were used throughout, without averaging over seeds or
+a systematic scan of $\beta$, hidden-layer size, or training length.
+Section~\ref{sec:hadd-sweep} takes up the most immediate of these open
+questions -- a systematic scan over the added-unit count itself -- and
+finds that getting cross-family recovery right, and avoiding a subtler
+side effect on each family's own single-site statistics, trade off
+against each other in a way invisible from any single configuration.
+
+\section{How many added units are needed? A capacity sweep}
+\label{sec:hadd-sweep}
+
+Every result so far used $H_{\mathrm{add}}=30$ added units, a fixed choice
+carried through without justification beyond ``comparable to each
+family's own $30$ hidden units''. Since the added units are the sole
+channel through which the paired model can represent cross-family
+information (Section~\ref{sec:paired}), it is natural to ask how many are
+actually needed, and whether there is a cost -- not to the headline
+recovery, but elsewhere -- to using more or fewer than that.
+
+\subsection{A stronger local field, to make single-site diagnostics informative}
+\label{sec:strongfield}
+
+Answering this requires trusting a diagnostic finer than the pairwise
+correlation checks used above: the single-site marginal $\langle v_i
+\rangle$, the simplest possible observable of the visible layer. Under
+the original data set (Section~\ref{sec:model}, field range
+$h\in[-0.05,0.05]$), this observable turns out to be structurally
+unusable for that purpose. The genuine site-to-site variation in
+$\langle v_i\rangle$ has standard deviation $\approx0.008$ across the $30$
+sites of a family -- a direct consequence of the narrow field range -- while
+the sampling error of a mean estimated from $N$ Gibbs samples is
+$\sqrt{0.25/N}$: $\approx0.022$ at the $512$-sample training batches used
+throughout, and still $\approx0.016$ at the $1000$-sample equilibrium
+validation of Section~\ref{sec:paired}. The genuine signal is smaller
+than the noise floor of either diagnostic by construction, regardless of
+how well the model has been trained: no amount of additional Monte Carlo
+sampling changes this without also enlarging the training set itself,
+since the data-side estimate carries its own, comparably-sized, finite-sample
+error.
+
+We therefore generated a second data set, identical in every other
+respect (edge density $0.12$, $J\in[-0.8,0.8]$, $K\in[-0.9,0.9]$,
+$n_{\mathrm{links}}=100$, $\beta=0.5$) but with the field range widened
+to $h\in[-0.3,0.3]$, raising the genuine $\langle v_i\rangle$ signal to
+standard deviation $\approx0.045$ -- comfortably above both noise floors --
+without touching the intra- or inter-family coupling structure that is
+the actual object of interest. All results in this section use this
+wider-field data set.
+
+\subsection{Two distinct failure modes for the single-site marginal}
+\label{sec:v-failure-modes}
+
+Widening the field resolves the private RBMs' $\langle v_i\rangle$
+agreement almost completely ($\rho\approx0.99$ at equilibrium, essentially
+indistinguishable from the excellent $\langle v_ih_\mu\rangle$ and
+$\langle v_iv_j\rangle$ agreement already reported in
+Section~\ref{sec:model}), confirming that this observable was never
+measuring a model deficiency -- only a noise floor. This is the same
+qualitative resolution as reweighting sample size: on the original,
+narrow-field data set, raising the equilibrium sample count from $1000$ to
+$10\,000$ likewise took the private RBMs' $\langle v_i\rangle$ agreement
+from $\rho=0.12/0.39$ to $\rho=0.80/0.68$ (family $A$/$B$). Both routes --
+more samples, or a stronger genuine signal -- fix the same problem, because
+it is the same problem: insufficient signal-to-noise in a finite-sample
+estimate.
+
+The \emph{paired} model's own $\langle v_i\rangle$, however, does not
+respond to either fix. At $H_{\mathrm{add}}=30$ on the wider-field data
+set, $\rho(\langle v\rangle_{\mathrm{data}},\langle
+v\rangle_{\mathrm{model}})=0.26$ at $N=1000$ equilibrium samples and
+$\rho=0.24$ at $N=50\,000$ -- a fifty-fold increase in samples changes
+nothing. Examining the residual $\langle v\rangle_{\mathrm{model}}-\langle
+v\rangle_{\mathrm{data}}$ directly at $N=50\,000$ confirms this is not a
+sampling artefact: its mean is zero (no overall shift), but its standard
+deviation, $\approx0.10$, exceeds the genuine signal's own standard
+deviation ($\approx0.045$) by more than a factor of two. This is a real,
+stable discrepancy between the paired model's marginals and the data's,
+not a measurement problem.
+
+The mechanism is structural rather than a training failure. The frozen
+$A$--$A$ and $B$--$B$ blocks are exact copies of the independently trained
+private RBMs' parameters (freeze check: $30/30$ logged steps OK, at
+every $H_{\mathrm{add}}$ reported below), so the only parameters that can
+move a site's marginal away from what its private model alone would
+predict are the added units. But a hidden unit cannot encode a
+correlation between two visible sites without also nudging each site's
+own marginal: the same weight that lets the unit fire preferentially when
+sites $i$ and $j$ align is, by construction, a weight that shifts $i$'s
+and $j$'s individual expectations whenever the unit is active at all. The
+two effects are not separable. We had initially guessed this collateral
+shift would be roughly independent of field strength (its standard
+deviation measured $\approx0.015$ on the original, narrow-field data set)
+-- but it is not: on the wider-field data it grows to $\approx0.10$, a
+factor of $\approx7$, \emph{faster} than the $\approx5.6\times$ growth of
+the genuine signal itself. A plausible reading is that pushing a more
+strongly polarised site toward a correlated outcome requires
+proportionally larger weight than pushing a nearly-unbiased one, so the
+same correlational job costs more collateral marginal disturbance once
+the background field is stronger.
+
+\subsection{Sweeping the added-unit count}
+
+We repeated the full private-plus-paired pipeline (unchanged protocol:
+$10\,000$ PCD steps per private RBM, $3000$ further steps for the paired
+model, $1000$-sample equilibrium Gibbs validation) at
+$H_{\mathrm{add}}\in\{5,10,20,30,40,50,60\}$ on the wider-field data set,
+holding every other hyperparameter fixed.
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.9\linewidth]{figures/hadd_sweep_recovery.png}
+\caption{Cross-family recovery against the true coupling matrix $K$, as a
+function of the number of added units $H_{\mathrm{add}}$ (wider-field data
+set, equilibrium Gibbs samples, $N=1000$). Both the top-$100$
+strongest-pair overlap and the whole-matrix correlation with $K$ rise
+steeply up to $H_{\mathrm{add}}\approx30$ and then plateau, within noise,
+all the way to $H_{\mathrm{add}}=60$.}
+\label{fig:haddrecovery}
+\end{figure}
+
+Fig.~\ref{fig:haddrecovery} shows the headline recovery metrics: both
+climb steeply from $H_{\mathrm{add}}=5$ (top-$100$ overlap $0.32$,
+correlation with $K$ $0.48$) to $H_{\mathrm{add}}=30$ (overlap $0.69$,
+correlation $0.81$), then plateau completely -- $40$, $50$ and $60$ added
+units all sit within noise of the $30$-unit result on both metrics.
+Thirty added units already recover essentially everything extractable
+from a $100$-link coupling matrix of this size and strength; beyond that
+point, more units buy nothing on the metric that actually motivated their
+existence.
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.9\linewidth]{figures/hadd_sweep_collateral.png}
+\caption{Collateral effect on single-site statistics, same sweep as
+Fig.~\ref{fig:haddrecovery}: the paired model's own $\langle v\rangle$
+agreement (left) and the frozen private blocks' $\langle
+h_Av_A\rangle$/$\langle h_Bv_B\rangle$ agreement, averaged (right), both
+as a function of $H_{\mathrm{add}}$. The orange diamond and dotted
+connector at $H_{\mathrm{add}}=20$ show a full rerun with an independent
+random seed, illustrating the size of the run-to-run noise on these two
+diagnostics.}
+\label{fig:haddcollateral}
+\end{figure}
+
+Fig.~\ref{fig:haddcollateral} tells a different, non-monotonic story for
+the collateral cost on single-site statistics. Both the paired model's own
+$\langle v\rangle$ agreement and the frozen blocks' $\langle
+hv\rangle$ agreement are good at both extremes of the sweep --
+$H_{\mathrm{add}}=5,10$, where the added units are capacity-starved and
+simply are not pushing hard (confirmed independently by their poor
+recovery score at the same points), and $H_{\mathrm{add}}=60$, well past
+the point where more capacity helps recovery -- and worst in the middle,
+close to where the headline recovery curve is completing its climb to
+the plateau ($H_{\mathrm{add}}=20$--$50$).
+
+Because each of these $\rho$ estimates is computed over only the $30$ (or,
+for $\langle v\rangle$, $60$) sites of one or two families, they carry
+substantial run-to-run variance. We checked this directly by rerunning
+the entire $H_{\mathrm{add}}=20$ configuration with an independent random
+seed: the paired model's $\langle v\rangle$ agreement moved from
+$\rho=0.07$ to $\rho=0.68$, and the frozen blocks' average $\langle
+hv\rangle$ agreement from $\rho=0.70$ to $\rho=0.86$ (Fig.~\ref{fig:haddcollateral},
+orange diamonds) -- confirming that any single point on this curve should
+be read cautiously. The broader shape, however, is not simply an artefact
+of that one noisy point: $H_{\mathrm{add}}=30$, $40$ and $50$ form an
+independent cluster of three low values, distinct from the consistently
+higher values at $5$, $10$ and $60$, so the qualitative U-shape -- good at
+the edges, worse near full capacity utilisation -- is better supported
+than any individual number on the curve.
+
+\subsection{Interpretation and a design lesson}
+
+The pattern is consistent with the mechanism identified in
+Section~\ref{sec:v-failure-modes}: the collateral marginal shift tracks
+how hard the added units are actually being pushed, which is governed by
+the correlational workload relative to their number, not by their count
+alone. Below the capacity needed for the task, the added units are not
+yet working hard (and, the recovery curve confirms, genuinely cannot
+represent more correlation with so few of them); once comfortably past
+that point, the same, now-saturated correlational workload is shared
+across more hidden units, so each one is pushed less and disturbs the
+single-site marginals less.
+
+This suggests a concrete design lesson for the setting that motivated this
+model in the first place (Section~\ref{sec:protein}): the point of
+``just enough'' added-unit capacity for the recovery task is exactly the
+worst place to sit if a clean model, undistorted at the level of each
+subsystem's own statistics, also matters. Once a rough estimate of the
+required capacity is available, over-provisioning added units costs
+essentially nothing on the metric that motivates them, while measurably
+improving every other diagnostic. Because the right $H_{\mathrm{add}}$ for
+real protein families is not known in advance -- unlike here, where the
+sweep could be run against a known ground truth -- generous
+over-provisioning is a cheap, low-risk default for that setting.
+
+\section{Generalization to real protein sequence data}
+\label{sec:protein}
+
+The two-family Ising model of Sections~\ref{sec:model}--\ref{sec:paired} is
+a controlled test case with a known ground truth, but the motivating
+question -- can inter-subsystem correlations be attributed to a small,
+dedicated block of hidden units, added on top of independently trained
+private models? -- is really about correlated biological sequence
+families. We therefore repeat the entire construction, unchanged in its
+architecture and training recipe, on a real protein data set: pairs of
+sequences drawn from two Pfam domains, PF00072 and PF00512, that co-occur
+in the same protein (a standard two-component signal-transduction
+receiver/histidine-kinase pairing), giving $77\,880$ paired sequences from
+\texttt{PF00072\_PF00512\_paired.fasta}. Family $A$ is the first
+$111$ alignment columns (PF00072) and family $B$ the remaining $66$
+columns (PF00512) of each paired sequence; visible units are one-hot,
+$q=21$-state Potts variables (the $20$ amino acids plus the alignment gap
+symbol), encoded exactly as in Section~\ref{sec:model}'s Potts variant but
+with $q=21$ in place of $q=2$. Sequences are split $70/15/15$ into
+training, validation and (unused) test sets, mirroring the Ising study.
+
+The private RBMs use $150$ (family $A$) and $100$ (family $B$) hidden
+units -- family $A$'s domain has nearly twice as many columns, so it is
+given proportionally more capacity -- trained for $10\,000$ PCD steps each
+with $K=50$ Gibbs sweeps per step, exactly as in Section~\ref{sec:model};
+the paired model adds $H_{\mathrm{add}}=20$ free hidden units on top of
+the two frozen private blocks and is trained for a further $5000$ steps,
+using the identical freeze-and-reset mechanism of Section~\ref{sec:paired}.
+
+\subsection{Two adaptations required by real data}
+
+Two aspects of the Ising validation pipeline (Section~\ref{sec:model},
+`Diagnostics') do not carry over to real sequences and had to be replaced.
+
+\begin{enumerate}
+\item \textbf{No ground-truth coupling matrix.} $K$ was known by
+construction in the Ising model; no such object exists for real protein
+families. We instead use the held-out validation sequences (never seen
+during training) as the best available truth proxy for ``what real
+cross-family covariation looks like'', and report the training data's own
+agreement with that held-out split as the finite-sample-noise ceiling --
+the direct analogue of the Section~\ref{sec:sparsity} ``data ceiling''.
+\item \textbf{Amino acids are not ordinal.} The Ising validation reduces
+each spin to a single $\pm1$ number before taking a Pearson correlation.
+Amino-acid identities have no natural order, so an analogous numbering
+($A=0,C=1,\dots$) and correlation would depend on that arbitrary choice.
+We instead measure site-pair coupling strength by the Frobenius norm, over
+the $q\times q$ colour pairs, of the connected one-hot correlation tensor
+$C[a,i,b,j]=\langle v_i^{=a} v_j^{=b}\rangle-\langle v_i^{=a}\rangle\langle
+v_j^{=b}\rangle$ -- the same quantity already used, in scalar-summary
+form, by the training-time $vh$/$vv$/$ab$ diagnostics, and the standard way
+of reducing a Potts model's per-site-pair coupling to a single
+non-negative covariation score (cf.\ Frobenius-norm/APC scores in direct
+coupling analysis).
+\end{enumerate}
+
+\subsection{Results}
+
+Training-time diagnostics reproduce the qualitative Ising picture: both
+private RBMs show no train/validation pseudo-likelihood gap worth noting
+($\ell=-1.08$ train vs.\ $-1.18$ validation for family $A$; $-0.91$ vs.\
+$-0.96$ for family $B$), the freeze check confirms the private blocks stay
+exactly at their reference values throughout paired training ($50/50$
+logged steps OK), and the interfamily $ab$-check on the training-time PCD
+chains climbs steadily over the $5000$ paired steps
+(Fig.~\ref{fig:pfamabcheck}) -- but only to $r\approx0.61$, distinctly
+below the $r\approx0.8$ reached on the synthetic Ising data in the same
+number of steps.
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.42\linewidth]{figures/pfam_ab_check_training.png}
+\caption{Protein data set: evolution of the training-time interfamily
+$ab$-check (cf.\ Fig.~\ref{fig:abcheck}) over the $5000$ paired-training
+steps. It climbs but plateaus around $r\approx0.6$, short of the $r\approx0.8$
+reached on the synthetic Ising data.}
+\label{fig:pfamabcheck}
+\end{figure}
+
+The decisive, post-training equilibrium test draws $1000$ Gibbs chains,
+each run for $25\,000$ sweeps (five times longer than the Ising study, to
+accommodate the much larger $q=21$, $177$-site state space), and compares
+against the held-out reference as described above. The paired model
+clearly separates from the zero-coupling independent-RBM baseline -- a
+top-$366$ ($5\%$ of the $111\times66$ cross-family site pairs)
+strongest-pair overlap of $0.139$ against $0.027$ for the independent
+baseline, and a whole-matrix correlation against the held-out reference of
+$r=0.404$ against $r=0.177$ (Table~\ref{tab:pfamheadline},
+Fig.~\ref{fig:pfamcrosscorr}) -- confirming that the added units do
+recover genuine, verifiable cross-family coevolutionary signal on real
+sequence data, not only on the idealized synthetic model. However, both
+figures sit markedly further from the training-data ceiling ($0.839$
+overlap, $r=0.966$) than in the Ising case, where the paired model closed
+most of the gap to that same ceiling (Table~\ref{tab:headline}).
+
+\begin{table}[htb]
+\centering
+\caption{Equilibrium validation against the held-out reference (Gibbs
+samples, $1000$ chains, $25\,000$ sweeps burn-in). ``Train data'' is the
+finite-sample ceiling (agreement between the training set and the
+held-out split); ``independent'' is the null model of two uncoupled,
+independently trained RBMs. Cf.\ Table~\ref{tab:headline} for the Ising
+analogue.}
+\label{tab:pfamheadline}
+\begin{tabular}{lccc}
+\toprule
+ & paired model & train data (ceiling) & independent (null) \\
+\midrule
+top-366 overlap & 0.139 & 0.839 & 0.027 \\
+corr.\ with held-out & 0.404 & 0.966 & 0.177 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.78\linewidth]{figures/pfam_cross_corr.png}
+\caption{Cross-family coupling-strength matrices (Frobenius-norm score,
+see text) at equilibrium: held-out data, training data, paired model, and
+two independent, uncoupled RBMs. The paired model's pattern is visibly
+distinct from the independent baseline's but only partially matches the
+held-out reference's finer structure.}
+\label{fig:pfamcrosscorr}
+\end{figure}
+
+Block-wise, the added units' correlation with the full joint visible layer
+is high and faithful to the data ($\rho=0.914$ for
+$\langle h_{\mathrm{add}}v_{\mathrm{full}}\rangle$; $\rho=0.896$ and
+$\rho=0.942$ restricted to family $A$ and $B$ separately), essentially
+matching the quality seen in the Ising study. In sharp contrast, the
+\emph{frozen} private blocks -- which reproduced the data almost exactly
+in the Ising case ($\rho=0.95$--$0.97$, Fig.~\ref{fig:blockhv}) -- show
+visibly degraded agreement here ($\rho=0.50$ for $\langle h_A v_A\rangle$,
+$\rho=0.75$ for $\langle h_B v_B\rangle$; Fig.~\ref{fig:pfamblockhv}), and
+the family-preservation check tells the same story: the mean off-diagonal
+coupling strength within each family grows substantially once sampled
+from the full paired model relative to its data value (family $A$:
+$0.038\to0.135$; family $B$: $0.064\to0.123$ -- a $2$--$3.5\times$
+increase, against a barely-perceptible change in the Ising case).
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.85\linewidth]{figures/pfam_block_hv.png}
+\caption{Protein data set: data- vs.\ model-side visible--hidden
+correlations from equilibrium Gibbs samples, split by hidden block (cf.\
+Fig.~\ref{fig:blockhv}). The added units (green) track the data
+closely; the frozen private blocks (blue, orange) -- which matched almost
+exactly in the Ising study -- show visible, systematic disagreement.}
+\label{fig:pfamblockhv}
+\end{figure}
+
+\subsection{An important caveat on equilibration}
+\label{sec:pfam-equilibration}
+
+Before over-interpreting this degradation as a property of the trained
+model, we checked the same free-energy burn-in diagnostic used in
+Fig.~\ref{fig:freeenergy}. Unlike the Ising chains, which reach a visible
+plateau well inside their $5000$-sweep budget, the protein chains are
+\emph{still decreasing} at the end of their $25\,000$-sweep run
+(Fig.~\ref{fig:pfamfreeenergy}), for all three models (private $A$,
+private $B$, and paired). The much larger, $q=21$ categorical state space
+of a $\sim\!100$-site protein domain evidently mixes far more slowly under
+single-site Gibbs sampling than the $30$-spin Ising family, and $25\,000$
+sweeps -- already five times the Ising burn-in -- is not enough to reach a
+genuine stationary distribution here. The equilibrium comparisons above
+should therefore be read as a lower bound obtained from an
+still-relaxing, rather than a fully converged, sample: both the apparent
+family-preservation degradation and the shortfall relative to the
+training-data ceiling could tighten with substantially longer chains, and
+neither should yet be taken as a settled property of the trained model
+itself.
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.85\linewidth]{figures/pfam_free_energy.png}
+\caption{Free energy of the Gibbs chains as a function of the number of
+Monte Carlo sweeps, protein data set (cf.\ Fig.~\ref{fig:freeenergy}). Unlike
+the Ising case, no plateau is reached within the $25\,000$-sweep budget used
+throughout the equilibrium validation above.}
+\label{fig:pfamfreeenergy}
+\end{figure}
+
+\subsection{Discussion}
+
+The freeze-and-add construction generalizes qualitatively from the
+synthetic Ising toy model to real, biologically evolved protein sequence
+families: a small ($H_{\mathrm{add}}=20$) shared hidden block, added on
+top of two independently trained, frozen private RBMs, recovers
+cross-family coevolutionary structure that a pair of uncoupled models
+cannot -- by a wide margin on every metric we checked. This confirms that
+the mechanism is not an artifact specific to the clean, sparse synthetic
+coupling matrix of Sections~\ref{sec:model}--\ref{sec:paired}.
+
+Quantitatively, however, the protein case is a substantially harder
+regime than the Ising toy model: the recovered signal sits much further
+from its own finite-sample ceiling ($0.139/0.839$ top-$K$ overlap vs.\ the
+Ising study's $0.67/0.74$), and the frozen private blocks show a
+degradation under long equilibrium sampling that is essentially absent in
+the Ising case. Section~\ref{sec:pfam-equilibration} shows that at least
+part of this gap is very plausibly a sampling artifact rather than a
+genuine limitation of the trained parameters: the protein chains have not
+visibly equilibrated even after five times the Ising burn-in budget, so
+comparisons drawn from them carry an unknown, one-sided bias. The
+remaining, likely genuine contributors are (i) real protein coevolution is
+denser and more structured than the sparse, uniformly-random synthetic
+$K$ used in Sections~\ref{sec:model}--\ref{sec:paired}, which is a
+harder target for a fixed, small $H_{\mathrm{add}}$; and (ii) $5000$
+paired-training steps, sufficient for the $60$-spin Ising visible layer,
+may simply undertrain a $20$-unit added block sitting on top of a $177$-site,
+$q=21$ visible layer -- nearly six times as many free visible-unit degrees
+of freedom for the same number of added hidden units and training steps.
+Distinguishing a genuine ceiling on what this construction can recover on
+real sequence data from these two confounds -- insufficient Gibbs mixing
+and insufficient paired-training length -- is the natural next step before
+drawing firm conclusions about its applicability beyond the controlled
+Ising setting.
+
+\end{document}

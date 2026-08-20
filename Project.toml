@@ -1,0 +1,37 @@
+name = "TwoFamilyIsing"
+uuid = "1e32a7bf-4828-43df-984f-a3befd7eef20"
+version = "0.1.0"
+authors = ["Cristina Diaz Faloh"]
+
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
+HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+OneHotArrays = "0b1bfda6-eb8a-41d2-88d8-f5af5cad476f"
+Optimisers = "3bd65402-5787-11e9-1adc-39752487f4e2"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+RestrictedBoltzmannMachines = "12e6b396-7db5-4506-8cb6-664a4fe1e50e"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+ValueHistories = "98cad3c8-aec3-5f06-8e41-884608649ab7"
+
+[compat]
+CUDA = "6.2.0"
+CairoMakie = "0.15.11"
+DelimitedFiles = "1.9.1"
+HDF5 = "0.17.3"
+Makie = "0.24.11"
+OneHotArrays = "0.2.11"
+Optimisers = "0.4.7"
+RestrictedBoltzmannMachines = "5.4.0"
+ValueHistories = "0.5.6"
+julia = "1.12"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

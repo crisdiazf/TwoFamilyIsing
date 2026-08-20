@@ -1,0 +1,7 @@
+# Large generated outputs — not source, don't belong in git history
+/results/
+*.tar.gz
+
+# Local tool/editor config, not project source
+/.claude/
+/.vscode/
